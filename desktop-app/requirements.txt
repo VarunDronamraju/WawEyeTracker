@@ -1,0 +1,11 @@
+﻿PyQt6==6.6.1
+PyQt6-Qt6==6.6.1
+opencv-python==4.8.1.78
+requests==2.31.0
+cryptography==41.0.7
+keyring==24.3.0
+pyjwt==2.8.0
+pytest==7.4.3
+pytest-qt==4.2.0
+pytest-cov==4.1.0
+pyinstaller==6.2.0
