@@ -1,32 +1,38 @@
-import bcrypt
-import jwt
 import secrets
+import hashlib
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
-from cryptography.fernet import Fernet
 from passlib.context import CryptContext
+from jose import JWTError, jwt
+from fastapi import HTTPException, status
+
+from .config import settings
+
+# Password hashing
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 class SecurityManager:
-    def __init__(self, secret_key: str):
-        self.secret_key = secret_key
-        self.algorithm = "HS256"
-        self.access_token_expire_minutes = 30
-        self.refresh_token_expire_days = 7
-        self.pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+    """Security utilities for authentication and encryption"""
+    
+    def __init__(self):
+        self.secret_key = settings.SECRET_KEY
+        self.algorithm = settings.ALGORITHM
+        self.access_token_expire_minutes = settings.ACCESS_TOKEN_EXPIRE_MINUTES
+        self.refresh_token_expire_days = settings.REFRESH_TOKEN_EXPIRE_DAYS
     
     def generate_salt(self) -> str:
         """Generate cryptographically secure salt"""
         return secrets.token_hex(32)
     
     def hash_password(self, password: str, salt: str) -> str:
-        """Hash password with salt using bcrypt"""
+        """Hash password with salt"""
         salted_password = f"{password}{salt}"
-        return self.pwd_context.hash(salted_password)
+        return pwd_context.hash(salted_password)
     
     def verify_password(self, password: str, salt: str, hashed_password: str) -> bool:
         """Verify password against hash"""
         salted_password = f"{password}{salt}"
-        return self.pwd_context.verify(salted_password, hashed_password)
+        return pwd_context.verify(salted_password, hashed_password)
     
     def create_access_token(self, data: Dict[str, Any]) -> str:
         """Create JWT access token"""
@@ -49,23 +55,7 @@ class SecurityManager:
             if payload.get("type") != token_type:
                 return None
             return payload
-        except jwt.ExpiredSignatureError:
+        except JWTError:
             return None
-        except jwt.JWTError:
-            return None
-    
-    def generate_encryption_key(self) -> bytes:
-        """Generate encryption key for local data"""
-        return Fernet.generate_key()
-    
-    def encrypt_data(self, data: str, key: bytes) -> str:
-        """Encrypt data using Fernet"""
-        f = Fernet(key)
-        encrypted_data = f.encrypt(data.encode())
-        return encrypted_data.decode()
-    
-    def decrypt_data(self, encrypted_data: str, key: bytes) -> str:
-        """Decrypt data using Fernet"""
-        f = Fernet(key)
-        decrypted_data = f.decrypt(encrypted_data.encode())
-        return decrypted_data.decode()
+
+security_manager = SecurityManager()
