@@ -1,175 +1,194 @@
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-                            QLCDNumber, QProgressBar, QGroupBox)
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QFont
-from typing import List
-import time
-from collections import deque
+"""
+Blink Counter Widget - Real-time blink count display
+Shows current session blinks with visual feedback
+"""
 
-from ...core.eye_tracker import BlinkEvent
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QLCDNumber, QFrame
+from PyQt6.QtCore import pyqtSignal, QPropertyAnimation, QEasingCurve, QRect
+from PyQt6.QtGui import QFont, QPalette
 
 class BlinkCounterWidget(QWidget):
-    """Widget for displaying blink count and rate"""
+    """Widget for displaying real-time blink count"""
     
-    blink_rate_changed = pyqtSignal(float)  # blinks per minute
+    # Signals
+    blink_threshold_reached = pyqtSignal(int)  # Emit when certain thresholds reached
     
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.blink_events: deque = deque(maxlen=1000)  # Store last 1000 blinks
-        self.setup_ui()
+    def __init__(self):
+        super().__init__()
+        self.current_count = 0
+        self.session_start_count = 0
         
-        # Timer for updating blink rate
-        self.update_timer = QTimer()
-        self.update_timer.timeout.connect(self.update_blink_rate)
-        self.update_timer.start(5000)  # Update every 5 seconds
-    
-    def setup_ui(self):
-        """Setup the blink counter UI"""
+        self.init_ui()
+        self.setup_animations()
+        
+    def init_ui(self):
+        """Initialize the user interface"""
         layout = QVBoxLayout(self)
         
-        # Group box
-        group = QGroupBox("Blink Counter")
-        group_layout = QVBoxLayout(group)
+        # Create frame for styling
+        frame = QFrame()
+        frame.setFrameStyle(QFrame.Shape.StyledPanel)
+        frame.setLineWidth(2)
+        layout.addWidget(frame)
         
-        # Total blinks LCD display
-        total_label = QLabel("Total Blinks:")
-        total_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        group_layout.addWidget(total_label)
+        frame_layout = QVBoxLayout(frame)
         
-        self.total_lcd = QLCDNumber(6)
-        self.total_lcd.setDigitCount(6)
-        self.total_lcd.display(0)
-        self.total_lcd.setMinimumHeight(60)
-        group_layout.addWidget(self.total_lcd)
+        # Title
+        title = QLabel("Real-time Blinks")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+        frame_layout.addWidget(title)
         
-        # Blinks per minute
-        bpm_label = QLabel("Blinks per Minute:")
-        bpm_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        group_layout.addWidget(bpm_label)
+        # LCD Display for blink count
+        self.lcd_display = QLCDNumber(4)  # 4 digits
+        self.lcd_display.setDigitCount(4)
+        self.lcd_display.setSegmentStyle(QLCDNumber.SegmentStyle.Filled)
+        self.lcd_display.display(0)
         
-        self.bpm_lcd = QLCDNumber(4)
-        self.bpm_lcd.setDigitCount(4)
-        self.bpm_lcd.display(0.0)
-        self.bpm_lcd.setMinimumHeight(50)
-        group_layout.addWidget(self.bpm_lcd)
+        # Set LCD styling
+        self.lcd_display.setStyleSheet("""
+            QLCDNumber {
+                background-color: #000000;
+                color: #00FF00;
+                border: 2px solid #333333;
+                border-radius: 8px;
+            }
+        """)
+        
+        frame_layout.addWidget(self.lcd_display)
+        
+        # Statistics labels
+        self.rate_label = QLabel("Rate: 0 blinks/min")
+        self.rate_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        frame_layout.addWidget(self.rate_label)
+        
+        self.session_label = QLabel("Session: 0 blinks")
+        self.session_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        frame_layout.addWidget(self.session_label)
         
         # Health indicator
-        health_label = QLabel("Eye Health Score:")
-        health_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        group_layout.addWidget(health_label)
+        self.health_indicator = QLabel("●")
+        self.health_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.health_indicator.setFont(QFont("Arial", 24))
+        self.update_health_indicator()
+        frame_layout.addWidget(self.health_indicator)
         
-        self.health_progress = QProgressBar()
-        self.health_progress.setRange(0, 100)
-        self.health_progress.setValue(85)  # Default good health score
-        self.health_progress.setMinimumHeight(25)
-        group_layout.addWidget(self.health_progress)
+    def setup_animations(self):
+        """Setup animations for visual feedback"""
+        # Blink flash animation
+        self.flash_animation = QPropertyAnimation(self.lcd_display, b"geometry")
+        self.flash_animation.setDuration(200)
+        self.flash_animation.setEasingCurve(QEasingCurve.Type.OutBounce)
         
-        # Health status text
-        self.health_status = QLabel("Good")
-        self.health_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.health_status.setFont(QFont("Arial", 10, QFont.Weight.Bold))
-        group_layout.addWidget(self.health_status)
-        
-        layout.addWidget(group)
-    
-    def add_blink(self, blink_event: BlinkEvent):
-        """Add a new blink event"""
-        self.blink_events.append(blink_event)
-        
-        # Update total count
-        self.total_lcd.display(len(self.blink_events))
-        
-        # Update blink rate immediately
-        self.update_blink_rate()
-    
+    def update_count(self, new_count: int):
+        """Update the blink count display"""
+        if new_count > self.current_count:
+            # New blink detected
+            self.current_count = new_count
+            self.lcd_display.display(self.current_count)
+            
+            # Update session count
+            session_blinks = self.current_count - self.session_start_count
+            self.session_label.setText(f"Session: {session_blinks} blinks")
+            
+            # Calculate and update rate (simplified)
+            # In a real implementation, you'd track time properly
+            self.update_blink_rate()
+            
+            # Update health indicator
+            self.update_health_indicator()
+            
+            # Play flash animation
+            self.play_blink_animation()
+            
+            # Check thresholds
+            self.check_thresholds(session_blinks)
+            
     def update_blink_rate(self):
-        """Update blinks per minute calculation"""
-        if not self.blink_events:
-            self.bpm_lcd.display(0.0)
+        """Update blink rate calculation"""
+        # Simplified rate calculation
+        # In production, use proper time tracking
+        import time
+        current_time = time.time()
+        
+        if not hasattr(self, 'last_update_time'):
+            self.last_update_time = current_time
+            self.rate_window_blinks = []
+            
+        # Add current blink to rate window
+        self.rate_window_blinks.append(current_time)
+        
+        # Keep only blinks from last minute
+        minute_ago = current_time - 60
+        self.rate_window_blinks = [t for t in self.rate_window_blinks if t > minute_ago]
+        
+        # Calculate rate
+        rate = len(self.rate_window_blinks)
+        self.rate_label.setText(f"Rate: {rate} blinks/min")
+        
+        self.last_update_time = current_time
+        
+    def update_health_indicator(self):
+        """Update health status indicator based on blink rate"""
+        if not hasattr(self, 'rate_window_blinks'):
             return
+            
+        current_rate = len(getattr(self, 'rate_window_blinks', []))
         
-        current_time = time.time()
+        # Health thresholds (blinks per minute)
+        if current_rate < 5:  # Too low
+            self.health_indicator.setText("●")
+            self.health_indicator.setStyleSheet("color: red; font-size: 24px;")
+        elif current_rate > 25:  # Too high
+            self.health_indicator.setText("●")
+            self.health_indicator.setStyleSheet("color: orange; font-size: 24px;")
+        else:  # Normal range
+            self.health_indicator.setText("●")
+            self.health_indicator.setStyleSheet("color: green; font-size: 24px;")
+            
+    def play_blink_animation(self):
+        """Play visual animation when blink is detected"""
+        if self.flash_animation.state() == QPropertyAnimation.State.Running:
+            return
+            
+        # Get current geometry
+        current_rect = self.lcd_display.geometry()
         
-        # Count blinks in the last minute
-        recent_blinks = [
-            event for event in self.blink_events 
-            if current_time - event.timestamp <= 60
-        ]
+        # Create slightly larger rect for flash effect
+        flash_rect = QRect(
+            current_rect.x() - 2,
+            current_rect.y() - 2,
+            current_rect.width() + 4,
+            current_rect.height() + 4
+        )
         
-        blinks_per_minute = len(recent_blinks)
-        self.bpm_lcd.display(blinks_per_minute)
+        # Setup animation
+        self.flash_animation.setStartValue(current_rect)
+        self.flash_animation.setEndValue(flash_rect)
+        self.flash_animation.finished.connect(lambda: self.lcd_display.setGeometry(current_rect))
         
-        # Update health score based on blink rate
-        self.update_health_score(blinks_per_minute)
+        # Start animation
+        self.flash_animation.start()
         
-        # Emit signal
-        self.blink_rate_changed.emit(blinks_per_minute)
-    
-    def update_health_score(self, blinks_per_minute: float):
-        """Update eye health score based on blink rate"""
-        # Normal blink rate is 15-20 per minute
-        # Score calculation:
-        # - Optimal range (15-20): 90-100%
-        # - Good range (10-25): 70-89%
-        # - Fair range (5-30): 50-69%
-        # - Poor range (<5 or >30): <50%
+    def check_thresholds(self, session_blinks: int):
+        """Check if blink count has reached certain thresholds"""
+        thresholds = [10, 25, 50, 100, 250, 500, 1000]
         
-        if 15 <= blinks_per_minute <= 20:
-            score = 90 + ((20 - abs(blinks_per_minute - 17.5)) / 2.5) * 10
-            status = "Excellent"
-            color = "#4CAF50"  # Green
-        elif 10 <= blinks_per_minute <= 25:
-            if blinks_per_minute < 15:
-                score = 70 + ((blinks_per_minute - 10) / 5) * 20
-            else:
-                score = 70 + ((25 - blinks_per_minute) / 5) * 20
-            status = "Good"
-            color = "#8BC34A"  # Light green
-        elif 5 <= blinks_per_minute <= 30:
-            if blinks_per_minute < 10:
-                score = 50 + ((blinks_per_minute - 5) / 5) * 20
-            else:
-                score = 50 + ((30 - blinks_per_minute) / 5) * 20
-            status = "Fair"
-            color = "#FFC107"  # Amber
-        else:
-            score = max(10, 50 - abs(blinks_per_minute - 17.5) * 2)
-            status = "Poor"
-            color = "#F44336"  # Red
+        for threshold in thresholds:
+            if (session_blinks >= threshold and 
+                session_blinks - 1 < threshold):  # Just crossed threshold
+                self.blink_threshold_reached.emit(threshold)
+                break
+                
+    def reset_session(self):
+        """Reset session counters"""
+        self.session_start_count = self.current_count
+        self.session_label.setText("Session: 0 blinks")
         
-        score = int(min(100, max(0, score)))
-        
-        self.health_progress.setValue(score)
-        self.health_status.setText(status)
-        
-        # Update progress bar color
-        self.health_progress.setStyleSheet(f"""
-            QProgressBar::chunk {{
-                background-color: {color};
-                border-radius: 2px;
-            }}
-        """)
-    
-    def reset(self):
-        """Reset blink counter"""
-        self.blink_events.clear()
-        self.total_lcd.display(0)
-        self.bpm_lcd.display(0.0)
-        self.health_progress.setValue(85)
-        self.health_status.setText("Good")
-    
-    def get_total_blinks(self) -> int:
-        """Get total blink count"""
-        return len(self.blink_events)
-    
-    def get_current_bpm(self) -> float:
-        """Get current blinks per minute"""
-        if not self.blink_events:
-            return 0.0
-        
-        current_time = time.time()
-        recent_blinks = [
-            event for event in self.blink_events 
-            if current_time - event.timestamp <= 60
-        ]
-        return len(recent_blinks)
+        # Reset rate tracking
+        if hasattr(self, 'rate_window_blinks'):
+            self.rate_window_blinks.clear()
+            
+    def get_session_blinks(self) -> int:
+        """Get current session blink count"""
+        return max(0, self.current_count - self.session_start_count)

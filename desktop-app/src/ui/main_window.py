@@ -1,224 +1,203 @@
-import sys
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-                            QLabel, QPushButton, QGroupBox, QGridLayout,
-                            QLCDNumber, QProgressBar, QSystemTrayIcon, 
-                            QMenu, QApplication, QSplitter, QFrame,
-                            QStatusBar, QMenuBar, QDialog)
-from PyQt6.QtCore import QTimer, Qt, pyqtSignal, QThread, pyqtSlot
-from PyQt6.QtGui import QIcon, QPixmap, QFont, QAction
-from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
-import time
-from datetime import datetime, timedelta
-from typing import Optional
+                            QLabel, QPushButton, QFrame, QStackedWidget,
+                            QMenuBar, QStatusBar, QSystemTrayIcon, QMenu,
+                            QMessageBox, QLCDNumber, QProgressBar, QSplitter)
+from PyQt6.QtCore import QTimer, pyqtSignal, QThread, Qt
+from PyQt6.QtGui import QAction, QIcon, QFont
 
-from ..core.eye_tracker import EyeTrackingEngine, BlinkEvent, TrackingStats
-from .widgets.blink_counter import BlinkCounterWidget
-from .widgets.performance_monitor import PerformanceMonitorWidget
-from .widgets.sync_status import SyncStatusWidget
-from .dialogs.settings_dialog import SettingsDialog
-from .dialogs.gdpr_consent import GDPRConsentDialog
+from ui.dialogs.login_dialog import LoginDialog
+from ui.dialogs.settings_dialog import SettingsDialog
+from ui.dialogs.consent_dialog import ConsentDialog
+from ui.widgets.blink_counter import BlinkCounterWidget
+from ui.widgets.eye_tracking_widget import EyeTrackingWidget
+from ui.widgets.sync_status_widget import SyncStatusWidget
+from core.eye_tracker import EyeTracker
 
 class MainWindow(QMainWindow):
-    """Main application window with eye tracking interface"""
-    
     # Signals
-    blink_detected = pyqtSignal(BlinkEvent)
-    stats_updated = pyqtSignal(TrackingStats)
+    blink_detected = pyqtSignal(int)  # blink count
+    tracking_started = pyqtSignal()
+    tracking_stopped = pyqtSignal()
     
-    def __init__(self):
+    def __init__(self, data_manager, auth_manager, config):
         super().__init__()
-        self.setWindowTitle("Wellness at Work - Eye Tracker")
-        self.setGeometry(100, 100, 1200, 800)
+        self.data_manager = data_manager
+        self.auth_manager = auth_manager
+        self.config = config
         
-        # Initialize components
-        self.eye_tracker = EyeTrackingEngine()
-        self.is_tracking = False
-        self.session_start_time = None
+        # Eye tracking components
+        self.eye_tracker = None
+        self.tracking_active = False
         
-        # Setup UI
-        self.setup_ui()
-        self.setup_system_tray()
-        self.setup_connections()
-        self.apply_theme()
-        
-        # Initialize timers
+        # Timers
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update_display)
-        self.update_timer.start(1000)  # Update every second
         
-        # Check GDPR consent
-        self.check_gdpr_consent()
-    
-    def setup_ui(self):
-        """Setup the main user interface"""
-        # Central widget
+        # Initialize UI
+        self.init_ui()
+        self.setup_connections()
+        
+        # Check authentication on startup
+        self.check_authentication()
+        
+    def init_ui(self):
+        """Initialize the user interface"""
+        self.setWindowTitle("Wellness at Work Eye Tracker")
+        self.setGeometry(100, 100, 1000, 700)
+        
+        # Create central widget
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
-        # Main layout
+        # Create main layout
         main_layout = QHBoxLayout(central_widget)
         
-        # Create splitter for resizable panels
+        # Create splitter for resizable layout
         splitter = QSplitter(Qt.Orientation.Horizontal)
         main_layout.addWidget(splitter)
         
-        # Left panel - Controls and Status
-        left_panel = self.create_left_panel()
-        splitter.addWidget(left_panel)
+        # Create sidebar
+        self.create_sidebar(splitter)
         
-        # Right panel - Live Data and Charts
-        right_panel = self.create_right_panel()
-        splitter.addWidget(right_panel)
+        # Create main content area
+        self.create_main_content(splitter)
         
-        # Set splitter sizes (30% left, 70% right)
-        splitter.setSizes([360, 840])
+        # Create menu bar
+        self.create_menu_bar()
         
-        # Setup menu bar
-        self.setup_menu_bar()
+        # Create status bar
+        self.create_status_bar()
         
-        # Setup status bar
-        self.setup_status_bar()
-    
-    def create_left_panel(self) -> QWidget:
-        """Create left control panel"""
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
+        # Apply styling
+        self.apply_styling()
+        
+    def create_sidebar(self, parent):
+        """Create navigation sidebar"""
+        sidebar = QFrame()
+        sidebar.setMaximumWidth(200)
+        sidebar.setFrameStyle(QFrame.Shape.StyledPanel)
+        
+        layout = QVBoxLayout(sidebar)
         
         # Title
-        title = QLabel("Eye Tracking Control")
-        title.setFont(QFont("Arial", 16, QFont.Weight.Bold))
+        title = QLabel("Eye Tracker")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setFont(QFont("Arial", 14, QFont.Weight.Bold))
         layout.addWidget(title)
         
-        # Tracking controls
-        controls_group = QGroupBox("Tracking Controls")
-        controls_layout = QVBoxLayout(controls_group)
+        # Navigation buttons
+        self.nav_buttons = {}
+        nav_items = [
+            ("Dashboard", self.show_dashboard),
+            ("Eye Tracking", self.show_eye_tracking),
+            ("Analytics", self.show_analytics),
+            ("Settings", self.show_settings)
+        ]
         
-        self.start_button = QPushButton("Start Tracking")
-        self.start_button.setMinimumHeight(40)
-        self.start_button.clicked.connect(self.toggle_tracking)
-        controls_layout.addWidget(self.start_button)
+        for name, handler in nav_items:
+            btn = QPushButton(name)
+            btn.clicked.connect(handler)
+            layout.addWidget(btn)
+            self.nav_buttons[name] = btn
+            
+        layout.addStretch()
         
-        self.pause_button = QPushButton("Pause")
-        self.pause_button.setEnabled(False)
-        self.pause_button.clicked.connect(self.pause_tracking)
-        controls_layout.addWidget(self.pause_button)
-        
-        layout.addWidget(controls_group)
-        
-        # Blink counter widget
-        self.blink_counter = BlinkCounterWidget()
-        layout.addWidget(self.blink_counter)
-        
-        # Performance monitor
-        self.performance_monitor = PerformanceMonitorWidget()
-        layout.addWidget(self.performance_monitor)
-        
-        # Sync status
+        # Status widgets at bottom
         self.sync_status = SyncStatusWidget()
         layout.addWidget(self.sync_status)
         
-        # Settings button
-        settings_button = QPushButton("Settings")
-        settings_button.clicked.connect(self.show_settings)
-        layout.addWidget(settings_button)
+        parent.addWidget(sidebar)
         
+    def create_main_content(self, parent):
+        """Create main content area with stacked widgets"""
+        self.content_stack = QStackedWidget()
+        
+        # Dashboard view
+        self.dashboard_widget = self.create_dashboard()
+        self.content_stack.addWidget(self.dashboard_widget)
+        
+        # Eye tracking view
+        self.eye_tracking_widget = EyeTrackingWidget()
+        self.content_stack.addWidget(self.eye_tracking_widget)
+        
+        # Analytics view (placeholder)
+        analytics_widget = QLabel("Analytics View - Coming Soon")
+        analytics_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.content_stack.addWidget(analytics_widget)
+        
+        # Settings view will be handled by dialog
+        
+        parent.addWidget(self.content_stack)
+        
+        # Set default view
+        self.content_stack.setCurrentWidget(self.dashboard_widget)
+        
+    def create_dashboard(self):
+        """Create dashboard with real-time metrics"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        # Welcome message
+        welcome = QLabel("Welcome to Wellness at Work Eye Tracker")
+        welcome.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        welcome.setFont(QFont("Arial", 16, QFont.Weight.Bold))
+        layout.addWidget(welcome)
+        
+        # Metrics grid
+        metrics_layout = QHBoxLayout()
+        
+        # Real-time blink counter
+        self.blink_counter = BlinkCounterWidget()
+        metrics_layout.addWidget(self.blink_counter)
+        
+        # Session info
+        session_frame = QFrame()
+        session_frame.setFrameStyle(QFrame.Shape.StyledPanel)
+        session_layout = QVBoxLayout(session_frame)
+        
+        session_layout.addWidget(QLabel("Session Status"))
+        self.session_status = QLabel("Not Tracking")
+        session_layout.addWidget(self.session_status)
+        
+        session_layout.addWidget(QLabel("Session Time"))
+        self.session_time = QLabel("00:00:00")
+        session_layout.addWidget(self.session_time)
+        
+        metrics_layout.addWidget(session_frame)
+        
+        layout.addLayout(metrics_layout)
+        
+        # Control buttons
+        controls_layout = QHBoxLayout()
+        
+        self.start_button = QPushButton("Start Tracking")
+        self.start_button.clicked.connect(self.start_tracking)
+        controls_layout.addWidget(self.start_button)
+        
+        self.stop_button = QPushButton("Stop Tracking")
+        self.stop_button.clicked.connect(self.stop_tracking)
+        self.stop_button.setEnabled(False)
+        controls_layout.addWidget(self.stop_button)
+        
+        layout.addLayout(controls_layout)
         layout.addStretch()
-        return panel
-    
-    def create_right_panel(self) -> QWidget:
-        """Create right data visualization panel"""
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
         
-        # Title
-        title = QLabel("Live Data Visualization")
-        title.setFont(QFont("Arial", 16, QFont.Weight.Bold))
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(title)
+        return widget
         
-        # Real-time blink chart
-        self.setup_blink_chart()
-        layout.addWidget(self.chart_view)
-        
-        # Statistics grid
-        stats_group = QGroupBox("Session Statistics")
-        stats_layout = QGridLayout(stats_group)
-        
-        # Session time
-        stats_layout.addWidget(QLabel("Session Time:"), 0, 0)
-        self.session_time_label = QLabel("00:00:00")
-        self.session_time_label.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-        stats_layout.addWidget(self.session_time_label, 0, 1)
-        
-        # Total blinks
-        stats_layout.addWidget(QLabel("Total Blinks:"), 1, 0)
-        self.total_blinks_label = QLabel("0")
-        self.total_blinks_label.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-        stats_layout.addWidget(self.total_blinks_label, 1, 1)
-        
-        # Blinks per minute
-        stats_layout.addWidget(QLabel("Blinks/Min:"), 2, 0)
-        self.bpm_label = QLabel("0.0")
-        self.bpm_label.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-        stats_layout.addWidget(self.bpm_label, 2, 1)
-        
-        # Average latency
-        stats_layout.addWidget(QLabel("Avg Latency:"), 3, 0)
-        self.latency_label = QLabel("0.0 ms")
-        self.latency_label.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-        stats_layout.addWidget(self.latency_label, 3, 1)
-        
-        layout.addWidget(stats_group)
-        
-        return panel
-    
-    def setup_blink_chart(self):
-        """Setup real-time blink chart"""
-        # Create chart
-        self.chart = QChart()
-        self.chart.setTitle("Blinks Per Minute (Real-time)")
-        
-        # Create line series
-        self.blink_series = QLineSeries()
-        self.blink_series.setName("Blinks/Min")
-        
-        # Add series to chart
-        self.chart.addSeries(self.blink_series)
-        
-        # Setup axes
-        self.chart.createDefaultAxes()
-        
-        # X-axis (time)
-        axis_x = QValueAxis()
-        axis_x.setTitleText("Time (minutes)")
-        axis_x.setRange(0, 10)
-        self.chart.setAxisX(axis_x, self.blink_series)
-        
-        # Y-axis (blinks per minute)
-        axis_y = QValueAxis()
-        axis_y.setTitleText("Blinks per Minute")
-        axis_y.setRange(0, 30)
-        self.chart.setAxisY(axis_y, self.blink_series)
-        
-        # Create chart view
-        self.chart_view = QChartView(self.chart)
-        self.chart_view.setRenderHint(self.chart_view.renderHints())
-        
-        # Initialize data storage
-        self.blink_data_points = []
-        self.chart_start_time = None
-    
-    def setup_menu_bar(self):
-        """Setup application menu bar"""
+    def create_menu_bar(self):
+        """Create application menu bar"""
         menubar = self.menuBar()
         
         # File menu
         file_menu = menubar.addMenu('File')
         
-        export_action = QAction('Export Data', self)
-        export_action.triggered.connect(self.export_data)
-        file_menu.addAction(export_action)
+        login_action = QAction('Login', self)
+        login_action.triggered.connect(self.show_login)
+        file_menu.addAction(login_action)
+        
+        logout_action = QAction('Logout', self)
+        logout_action.triggered.connect(self.logout)
+        file_menu.addAction(logout_action)
         
         file_menu.addSeparator()
         
@@ -226,16 +205,12 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
         
-        # Settings menu
-        settings_menu = menubar.addMenu('Settings')
+        # Tools menu
+        tools_menu = menubar.addMenu('Tools')
         
-        preferences_action = QAction('Preferences', self)
-        preferences_action.triggered.connect(self.show_settings)
-        settings_menu.addAction(preferences_action)
-        
-        gdpr_action = QAction('Privacy Settings', self)
-        gdpr_action.triggered.connect(self.show_gdpr_settings)
-        settings_menu.addAction(gdpr_action)
+        settings_action = QAction('Settings', self)
+        settings_action.triggered.connect(self.show_settings)
+        tools_menu.addAction(settings_action)
         
         # Help menu
         help_menu = menubar.addMenu('Help')
@@ -243,284 +218,214 @@ class MainWindow(QMainWindow):
         about_action = QAction('About', self)
         about_action.triggered.connect(self.show_about)
         help_menu.addAction(about_action)
-    
-    def setup_status_bar(self):
-        """Setup status bar"""
-        self.status_bar = QStatusBar()
-        self.setStatusBar(self.status_bar)
         
-        # Status labels
-        self.tracking_status = QLabel("Ready")
-        self.fps_status = QLabel("FPS: 0")
-        self.connection_status = QLabel("Offline")
+    def create_status_bar(self):
+        """Create status bar"""
+        self.status_bar = self.statusBar()
+        self.status_bar.showMessage("Ready")
         
-        self.status_bar.addWidget(self.tracking_status)
-        self.status_bar.addPermanentWidget(self.fps_status)
-        self.status_bar.addPermanentWidget(self.connection_status)
-    
-    def setup_system_tray(self):
-        """Setup system tray icon"""
-        if QSystemTrayIcon.isSystemTrayAvailable():
-            self.tray_icon = QSystemTrayIcon(self)
-            
-            # Create tray icon (you'll need to add an icon file)
-            # self.tray_icon.setIcon(QIcon("assets/icon.png"))
-            
-            # Create tray menu
-            tray_menu = QMenu()
-            
-            show_action = tray_menu.addAction("Show")
-            show_action.triggered.connect(self.show)
-            
-            start_action = tray_menu.addAction("Start Tracking")
-            start_action.triggered.connect(self.start_tracking)
-            
-            tray_menu.addSeparator()
-            
-            quit_action = tray_menu.addAction("Quit")
-            quit_action.triggered.connect(QApplication.instance().quit)
-            
-            self.tray_icon.setContextMenu(tray_menu)
-            self.tray_icon.show()
-            
-            # Connect tray icon activation
-            self.tray_icon.activated.connect(self.tray_icon_activated)
-    
+        # Add permanent widgets
+        self.auth_status = QLabel("Not Authenticated")
+        self.status_bar.addPermanentWidget(self.auth_status)
+        
     def setup_connections(self):
-        """Setup signal connections"""
-        # Eye tracker callbacks
-        self.eye_tracker.set_blink_callback(self.on_blink_detected)
-        self.eye_tracker.set_stats_callback(self.on_stats_updated)
-    
-    def apply_theme(self):
-        """Apply dark/light theme styling"""
-        self.setStyleSheet("""
-            QMainWindow {
-                background-color: #2b2b2b;
-                color: #ffffff;
-            }
-            QGroupBox {
-                font-weight: bold;
-                border: 2px solid #555555;
-                border-radius: 5px;
-                margin: 5px 0px;
-                padding-top: 10px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px 0 5px;
-            }
-            QPushButton {
-                background-color: #4CAF50;
-                border: none;
-                color: white;
-                padding: 8px 16px;
-                border-radius: 4px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
-            QPushButton:pressed {
-                background-color: #3d8b40;
-            }
-            QPushButton:disabled {
-                background-color: #666666;
-                color: #999999;
-            }
-            QLabel {
-                color: #ffffff;
-            }
-            QLCDNumber {
-                background-color: #1e1e1e;
-                color: #00ff00;
-                border: 1px solid #555555;
-            }
-            QProgressBar {
-                border: 1px solid #555555;
-                border-radius: 3px;
-                text-align: center;
-            }
-            QProgressBar::chunk {
-                background-color: #4CAF50;
-                border-radius: 2px;
-            }
-        """)
-    
-    def check_gdpr_consent(self):
-        """Check if GDPR consent has been given"""
-        # TODO: Check settings for consent status
-        # For now, show consent dialog on first run
-        consent_dialog = GDPRConsentDialog(self)
-        if consent_dialog.exec() != QDialog.DialogCode.Accepted:
-            self.close()
-    
-    @pyqtSlot()
-    def toggle_tracking(self):
-        """Toggle eye tracking on/off"""
-        if not self.is_tracking:
-            self.start_tracking()
-        else:
-            self.stop_tracking()
-    
-    def start_tracking(self):
-        """Start eye tracking"""
-        if self.eye_tracker.start_tracking():
-            self.is_tracking = True
-            self.session_start_time = time.time()
-            self.chart_start_time = time.time()
-            
-            # Update UI
-            self.start_button.setText("Stop Tracking")
-            self.start_button.setStyleSheet("background-color: #f44336;")
-            self.pause_button.setEnabled(True)
-            self.tracking_status.setText("Tracking Active")
-            
-            # Reset counters
-            self.blink_counter.reset()
-            self.blink_data_points.clear()
-            self.blink_series.clear()
-        else:
-            self.tracking_status.setText("Failed to start camera")
-    
-    def stop_tracking(self):
-        """Stop eye tracking"""
-        self.eye_tracker.stop_tracking()
-        self.is_tracking = False
-        self.session_start_time = None
+        """Setup signal-slot connections"""
+        # Connect eye tracking signals
+        self.blink_detected.connect(self.blink_counter.update_count)
+        self.tracking_started.connect(self.on_tracking_started)
+        self.tracking_stopped.connect(self.on_tracking_stopped)
         
-        # Update UI
-        self.start_button.setText("Start Tracking")
-        self.start_button.setStyleSheet("background-color: #4CAF50;")
-        self.pause_button.setEnabled(False)
-        self.tracking_status.setText("Ready")
-    
-    def pause_tracking(self):
-        """Pause/resume tracking"""
-        if self.eye_tracker.is_paused:
-            self.eye_tracker.resume_tracking()
-            self.pause_button.setText("Pause")
-            self.tracking_status.setText("Tracking Active")
-        else:
-            self.eye_tracker.pause_tracking()
-            self.pause_button.setText("Resume")
-            self.tracking_status.setText("Paused")
-    
-    def on_blink_detected(self, blink_event: BlinkEvent):
-        """Handle blink detection event"""
-        self.blink_detected.emit(blink_event)
-        self.blink_counter.add_blink(blink_event)
+        # Connect update timer
+        self.update_timer.start(1000)  # Update every second
         
-        # Add to chart data
-        if self.chart_start_time:
-            minutes_elapsed = (blink_event.timestamp - self.chart_start_time) / 60.0
-            self.blink_data_points.append((minutes_elapsed, blink_event))
-            self.update_chart()
-    
-    def on_stats_updated(self, stats: TrackingStats):
-        """Handle stats update"""
-        self.stats_updated.emit(stats)
-        self.performance_monitor.update_stats(stats)
+    def apply_styling(self):
+        """Apply CSS styling to the application"""
+        style = """
+        QMainWindow {
+            background-color: #f5f5f5;
+        }
         
-        # Update status bar
-        self.fps_status.setText(f"FPS: {stats.average_fps:.1f}")
-    
-    def update_display(self):
-        """Update display elements (called every second)"""
-        if self.is_tracking and self.session_start_time:
-            # Update session time
-            elapsed = time.time() - self.session_start_time
-            hours = int(elapsed // 3600)
-            minutes = int((elapsed % 3600) // 60)
-            seconds = int(elapsed % 60)
-            self.session_time_label.setText(f"{hours:02d}:{minutes:02d}:{seconds:02d}")
-            
-            # Update statistics
-            stats = self.eye_tracker.get_stats()
-            self.total_blinks_label.setText(str(stats.blinks_detected))
-            
-            # Calculate blinks per minute
-            if elapsed > 0:
-                bpm = (stats.blinks_detected / elapsed) * 60
-                self.bpm_label.setText(f"{bpm:.1f}")
-            
-            self.latency_label.setText(f"{stats.average_latency:.1f} ms")
-    
-    def update_chart(self):
-        """Update the real-time blink chart"""
-        if not self.blink_data_points:
-            return
+        QPushButton {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            font-weight: bold;
+        }
         
-        # Calculate blinks per minute for chart
-        current_time = time.time()
-        if not self.chart_start_time:
-            return
+        QPushButton:hover {
+            background-color: #45a049;
+        }
         
-        # Group data into 1-minute intervals
-        minute_data = {}
-        for time_point, blink_event in self.blink_data_points:
-            minute = int(time_point)
-            if minute not in minute_data:
-                minute_data[minute] = 0
-            minute_data[minute] += 1
+        QPushButton:pressed {
+            background-color: #3d8b40;
+        }
         
-        # Update chart series
-        self.blink_series.clear()
-        for minute in sorted(minute_data.keys()):
-            self.blink_series.append(minute, minute_data[minute])
+        QPushButton:disabled {
+            background-color: #cccccc;
+            color: #666666;
+        }
         
-        # Update x-axis range
-        if minute_data:
-            max_minute = max(minute_data.keys())
-            axis_x = self.chart.axes(Qt.Orientation.Horizontal)[0]
-            axis_x.setRange(max(0, max_minute - 10), max_minute + 1)
-    
+        QFrame {
+            background-color: white;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 10px;
+        }
+        
+        QLabel {
+            color: #333;
+        }
+        """
+        self.setStyleSheet(style)
+        
+    # Navigation methods
+    def show_dashboard(self):
+        self.content_stack.setCurrentWidget(self.dashboard_widget)
+        
+    def show_eye_tracking(self):
+        self.content_stack.setCurrentWidget(self.eye_tracking_widget)
+        
+    def show_analytics(self):
+        self.content_stack.setCurrentIndex(2)  # Analytics placeholder
+        
     def show_settings(self):
-        """Show settings dialog"""
         dialog = SettingsDialog(self)
         dialog.exec()
-    
-    def show_gdpr_settings(self):
-        """Show GDPR settings dialog"""
-        dialog = GDPRConsentDialog(self)
-        dialog.exec()
-    
+        
+    # Authentication methods
+    def check_authentication(self):
+        """Check if user is authenticated"""
+        if self.auth_manager.is_authenticated():
+            self.on_authenticated()
+        else:
+            self.show_login()
+            
+    def show_login(self):
+        """Show login dialog"""
+        dialog = LoginDialog(self.auth_manager, self)
+        if dialog.exec() == LoginDialog.DialogCode.Accepted:
+            self.on_authenticated()
+            
+    def logout(self):
+        """Logout user"""
+        self.auth_manager.logout()
+        self.auth_status.setText("Not Authenticated")
+        self.stop_tracking()
+        
+    def on_authenticated(self):
+        """Handle successful authentication"""
+        user = self.auth_manager.get_current_user()
+        self.auth_status.setText(f"Logged in as: {user.get('email', 'Unknown')}")
+        
+        # Check GDPR consent
+        if not self.auth_manager.has_gdpr_consent():
+            self.show_consent_dialog()
+            
+    def show_consent_dialog(self):
+        """Show GDPR consent dialog"""
+        dialog = ConsentDialog(self)
+        if dialog.exec() == ConsentDialog.DialogCode.Accepted:
+            self.auth_manager.set_gdpr_consent(True)
+            
+    # Eye tracking methods
+    def start_tracking(self):
+        """Start eye tracking"""
+        if not self.auth_manager.is_authenticated():
+            QMessageBox.warning(self, "Authentication Required", 
+                              "Please log in to start tracking.")
+            return
+            
+        if not self.auth_manager.has_gdpr_consent():
+            QMessageBox.warning(self, "Consent Required", 
+                              "Please provide GDPR consent to start tracking.")
+            return
+            
+        try:
+            # Initialize eye tracker
+            if not self.eye_tracker:
+                self.eye_tracker = EyeTracker()
+                
+            # Start tracking
+            self.eye_tracker.start_tracking()
+            self.tracking_active = True
+            
+            # Update UI
+            self.start_button.setEnabled(False)
+            self.stop_button.setEnabled(True)
+            self.session_status.setText("Tracking Active")
+            
+            # Emit signal
+            self.tracking_started.emit()
+            
+            self.status_bar.showMessage("Eye tracking started")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to start tracking: {str(e)}")
+            
+    def stop_tracking(self):
+        """Stop eye tracking"""
+        if self.eye_tracker and self.tracking_active:
+            self.eye_tracker.stop_tracking()
+            self.tracking_active = False
+            
+            # Update UI
+            self.start_button.setEnabled(True)
+            self.stop_button.setEnabled(False)
+            self.session_status.setText("Not Tracking")
+            
+            # Emit signal
+            self.tracking_stopped.emit()
+            
+            self.status_bar.showMessage("Eye tracking stopped")
+            
+    def on_tracking_started(self):
+        """Handle tracking started"""
+        # Start session in data manager
+        self.data_manager.start_session()
+        
+    def on_tracking_stopped(self):
+        """Handle tracking stopped"""
+        # End session in data manager
+        self.data_manager.end_session()
+        
+    def update_display(self):
+        """Update display with current data"""
+        if self.tracking_active and self.eye_tracker:
+            # Get latest blink count
+            blink_count = self.eye_tracker.get_blink_count()
+            self.blink_detected.emit(blink_count)
+            
+            # Update session time
+            session_time = self.data_manager.get_session_duration()
+            self.session_time.setText(self.format_duration(session_time))
+            
+    def format_duration(self, seconds):
+        """Format duration in HH:MM:SS format"""
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        seconds = seconds % 60
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        
     def show_about(self):
         """Show about dialog"""
-        from PyQt6.QtWidgets import QMessageBox
         QMessageBox.about(self, "About", 
-                         "Wellness at Work Eye Tracker v1.0\n\n"
-                         "A privacy-focused eye tracking application for workplace wellness.")
-    
-    def export_data(self):
-        """Export tracking data"""
-        # TODO: Implement data export functionality
-        from PyQt6.QtWidgets import QMessageBox
-        QMessageBox.information(self, "Export", "Data export functionality coming soon!")
-    
-    def tray_icon_activated(self, reason):
-        """Handle system tray icon activation"""
-        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
-            self.show()
-            self.raise_()
-            self.activateWindow()
-    
+                         "Wellness at Work Eye Tracker v1.0.0\n\n"
+                         "A desktop application for monitoring eye health "
+                         "and blink patterns in workplace environments.")
+        
     def closeEvent(self, event):
-        """Handle window close event"""
-        if hasattr(self, 'tray_icon') and self.tray_icon.isVisible():
-            self.hide()
-            event.ignore()
-        else:
-            if self.is_tracking:
+        """Handle application close"""
+        if self.tracking_active:
+            reply = QMessageBox.question(self, "Close Application",
+                                       "Eye tracking is active. Stop tracking and exit?",
+                                       QMessageBox.StandardButton.Yes | 
+                                       QMessageBox.StandardButton.No)
+            if reply == QMessageBox.StandardButton.Yes:
                 self.stop_tracking()
+                event.accept()
+            else:
+                event.ignore()
+        else:
             event.accept()
-
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    app.setQuitOnLastWindowClosed(False)  # Keep running in system tray
-    
-    window = MainWindow()
-    window.show()
-    
-    sys.exit(app.exec())

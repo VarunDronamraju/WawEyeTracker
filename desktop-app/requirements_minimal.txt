@@ -1,12 +1,10 @@
-﻿# GUI Framework
+﻿# Essential GUI Framework
 PyQt6>=6.5.0
-PyQt6-tools>=6.4.2
 
 # Computer Vision
 opencv-python>=4.8.0
 numpy>=1.24.0
 pillow>=10.0.0
-scipy>=1.11.0
 
 # Database & Storage
 sqlalchemy>=2.0.0
@@ -14,25 +12,12 @@ cryptography>=41.0.0
 
 # Networking
 requests>=2.31.0
-httpx>=0.24.0
 
 # Security
 keyring>=24.0.0
-bcrypt>=4.0.0
-
-# Utilities
-python-dotenv>=1.0.0
-pydantic>=2.0.0
-
-# Charts for UI
-PyQt6-Charts>=6.5.0
 
 # System monitoring
 psutil>=5.9.0
 
 # Building & Distribution
 pyinstaller>=5.13.0
-
-# Testing
-pytest>=7.4.0
-pytest-qt>=4.2.0
